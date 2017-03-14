@@ -3,6 +3,10 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Optional;
@@ -10,6 +14,7 @@ import java.util.OptionalDouble;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.google.inject.matcher.Matchers;
 import org.junit.Test;
 
 import com.github.fge.lambdas.Throwing;
@@ -20,9 +25,30 @@ import com.google.inject.Guice;
 import com.google.inject.Injector;
 
 public class MethodInterceptorTest {
+  @Target(ElementType.METHOD)
+  @Retention(RetentionPolicy.RUNTIME)
+  public static @interface Count {};
+
+  @Target(ElementType.METHOD)
+  @Retention(RetentionPolicy.RUNTIME)
+  public static @interface Timed {};
+
+  @Target(ElementType.TYPE)
+  @Retention(RetentionPolicy.RUNTIME)
+  public static @interface Tracked {};
+
+
+  @Tracked
   public static class ExampleMethods {
+    @Count
+    @Timed
     public int intMethod() { randomSleep(); return 1; }
+
+    @Count
+    @Timed
     public void voidMethod() { randomSleep(); }
+
+    public void unannotatedMethod() { randomSleep(); }
   }
 
   @Test
@@ -32,7 +58,9 @@ public class MethodInterceptorTest {
 
       @Override
       protected void configure() {
-        // add some stuff here.
+        bindInterceptor(Matchers.annotatedWith(Tracked.class),Matchers.annotatedWith(Count.class), i -> {
+          return registry.counter(i.getMethod()).count(i::proceed);
+        });
       }
     });
     
@@ -61,7 +89,13 @@ public class MethodInterceptorTest {
     Registry registry = new Registry();
     Injector injector = Guice.createInjector(new AbstractModule() {
       @Override public void configure() {
-        // do some stuff here.
+        bindInterceptor(Matchers.annotatedWith(Tracked.class),Matchers.annotatedWith(Count.class), i -> {
+          return registry.counter(i.getMethod()).count(i::proceed);
+        });
+
+        bindInterceptor(Matchers.annotatedWith(Tracked.class),Matchers.annotatedWith(Timed.class), i -> {
+          return registry.timer(i.getMethod()).time(i::proceed);
+        });
       }
     });
     
@@ -79,6 +113,45 @@ public class MethodInterceptorTest {
     assertThat(registry.getCounter(intMethod).get().getValue(), equalTo(1));
     assertThat(registry.getCounter(voidMethod).get().getValue(), equalTo(1));
     
+    m.voidMethod();
+
+    assertThat(registry.getCounter(intMethod).get().getValue(), equalTo(1));
+    assertThat(registry.getCounter(voidMethod).get().getValue(), equalTo(2));
+
+    assertThat(registry.getTimer(intMethod).get().getValue().getAsDouble(), greaterThan(0.0d));
+    assertThat(registry.getTimer(voidMethod).get().getValue().getAsDouble(), greaterThan(0.0d));
+  }
+
+  @Test
+  public void addingAnnotations() throws NoSuchMethodException, SecurityException {
+    Registry registry = new Registry();
+    Injector injector = Guice.createInjector(new AbstractModule() {
+      @Override public void configure() {
+        bindInterceptor(Matchers.annotatedWith(Tracked.class),Matchers.any(), i -> {
+          return registry.counter(i.getMethod()).count(i::proceed);
+        }, i -> {
+          return registry.timer(i.getMethod()).time(i::proceed);
+        });
+      }
+    });
+
+    Method intMethod = ExampleMethods.class.getMethod("intMethod");
+    Method voidMethod = ExampleMethods.class.getMethod("voidMethod");
+    Method unannotatedMethod = ExampleMethods.class.getMethod("unannotatedMethod");
+
+    ExampleMethods m = injector.getInstance(ExampleMethods.class);
+
+    assertThat(registry.getCounter(intMethod).isPresent(), equalTo(false));
+    assertThat(registry.getTimer(voidMethod).isPresent(), equalTo(false));
+
+    m.intMethod();
+    m.voidMethod();
+    m.unannotatedMethod();
+
+    assertThat(registry.getCounter(intMethod).get().getValue(), equalTo(1));
+    assertThat(registry.getCounter(voidMethod).get().getValue(), equalTo(1));
+    assertThat(registry.getCounter(unannotatedMethod).get().getValue(), equalTo(1));
+
     m.voidMethod();
 
     assertThat(registry.getCounter(intMethod).get().getValue(), equalTo(1));
